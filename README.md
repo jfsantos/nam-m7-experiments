@@ -115,45 +115,78 @@ The shared pieces are in `common/`:
   `R` (run), `I` (info) and `D` (reboot to bootloader);
 - `experiment.mk`: the shared build.
 
-## What the cycle model predicts
+## Results on a Daisy Seed
 
-The ARM builds have also been run in an emulator, with each variant's timed
-blocks fed to a Cortex-M7 timing model. The model is built from the same FPU
-measurements that experiment 5 makes. It treats every memory access as
-zero-wait, so it can't see the effects experiment 9 measures, or cache
-misses on the delay lines. **These are predictions, not board measurements:**
-run the experiments.
+Measured on 2026-10-06 at 480 MHz, with `make run-all`. The full reports are
+in `results/2026-10-06-daisy-seed.txt`. Every variant's output matched its
+reference.
 
-| Experiment | Variant | Model cycles/sample |
-|---|---|---:|
-| 1 | generic GEMV, run-time shapes | 29,900 |
-| | specialized, compile-time shapes | 6,137 |
-| 2 | frame-major, `a += w * x` | 5,484 |
-| | frame-major, `fmaf` | 6,137 |
-| | 6×3 tile, `a += w * x` | 6,899 |
-| | 6×3 tile, `fmaf` | 4,681 |
-| 3 | frame-major | 6,137 |
-| | tap-major | 7,830 |
-| 4 | rewind buffer | (spiky; see max/block) |
-| | masked ring | 7,830 |
-| | mirrored ring | 7,614 |
-| 6 | tap-major | 7,614 |
-| | tile 1×3 / 3×3 / 6×3 / 8×3 | 6,442 / 5,355 / 5,318 / 5,489 |
-| 7 | compiler schedule | 5,318 |
-| | pinned load runs | 4,681 |
-| | pinned + `-fno-schedule-insns2` | 4,777 |
-| 8 | C tile, pinned | 4,681 |
-| | assembly tile | 3,950 |
-| 10 | block 48: 6-frame tiles | 4,681 |
-| | block 16: 6-frame tiles + singles / 4-frame / 6+6+4 | 5,265 / 5,334 / 4,963 |
+The model column comes from running the same ARM builds in an emulator and
+timing them with a Cortex-M7 model. That model is built from FPU
+measurements like experiment 5's, and it treats every memory access as
+zero-wait, so it can't see experiment 9.
 
-Two predictions go against the usual advice:
+| # | Variant | Board cycles/sample | Model | vs first variant (board) |
+|---:|---|---:|---:|---:|
+| 1 | generic GEMV, run-time shapes | 28,236 | 29,900 | |
+| | specialized, compile-time shapes | 5,649 | 6,137 | 5.00x |
+| 2 | frame-major, `a += w * x` | 4,994 | 5,484 | |
+| | frame-major, `fmaf` | 5,965 | 6,137 | 0.84x |
+| | 6×3 tile, `a += w * x` | 6,296 | 6,899 | 0.79x |
+| | 6×3 tile, `fmaf` | 4,680 | 4,681 | 1.07x |
+| 3 | frame-major | 5,645 | 6,137 | |
+| | tap-major | 7,259 | 7,830 | 0.78x |
+| 4 | rewind buffer | 8,425 | – | |
+| | masked ring | 7,263 | 7,830 | 1.16x |
+| | mirrored ring | 7,081 | 7,614 | 1.19x |
+| 6 | tap-major | 7,066 | 7,614 | |
+| | tile 1×3 / 3×3 / 6×3 / 8×3 | 5,958 / 5,489 / 4,875 / 5,173 | 6,442 / 5,355 / 5,318 / 5,489 | 1.19 / 1.29 / 1.45 / 1.37x |
+| 7 | compiler schedule | 4,914 | 5,318 | |
+| | pinned load runs | 4,689 | 4,681 | 1.05x |
+| | pinned + `-fno-schedule-insns2` | 5,037 | 4,777 | 0.98x |
+| 8 | C tile, pinned | 4,680 | 4,681 | |
+| | assembly tile | 4,045 | 3,950 | 1.16x |
+| 9 | QSPI code, SRAM data (warm / cold) | 4,162 / 4,421 | – | |
+| | ITCM code, DTCM weights (warm / cold) | 4,059 / 4,180 | – | 1.03x / 1.00x |
+| | ITCM code, all data in DTCM (warm / cold) | 3,675 / 3,846 | – | 1.13x / 1.08x |
+| 10 | block 48: 6-frame / 4-frame tiles | 4,674 / 5,586 | 4,681 / 5,199 | 1.00 / 0.84x |
+| | block 16: 6-frame + singles / 4-frame / 6+6+4 | 5,280 / 5,859 / 5,219 | 5,265 / 5,334 / 4,963 | 0.89 / 0.80 / 0.90x |
 
-- **Experiment 2.** In the load-bound frame-major kernel, `a += w * x` is
-  predicted *faster* than `fmaf`. The split form's VMULs can issue alongside
-  loads, while VFMAs block them (experiment 5). In the FPU-bound tile, `fmaf`
-  wins clearly.
-- **Experiment 3.** Tap-major is predicted *slower* than a frame-major
-  baseline that already keeps its sums in registers, because every partial
-  sum is stored right after an FMA. Its value is as the step towards
-  register tiles (experiment 6).
+Experiment 5, cycles per unit on the board:
+
+| Pattern | Cycles |
+|---|---:|
+| VFMA, independent / dependent chain | 0.98 / 2.96 per VFMA |
+| VFMA + VLDR, VFMA + VSTR, VFMA + VMOV core→FP | 3.87 per pair |
+| VMUL + VLDR, VFMA + integer LDR, VMAXNM + VSTR | 1.00 per pair |
+| VLDR / VLDR.64 / VLDM runs (from DTCM) | 0.52 / 0.50 / 0.50 per float |
+
+What stands out:
+
+- **Experiment 2: `fmaf` isn't always faster.** In the load-bound
+  frame-major kernel, `a += w * x` is 16% faster. Its VMULs dual-issue with
+  loads, while VFMAs block them (experiment 5). In the FPU-bound tile,
+  `fmaf` is 26% faster.
+- **Experiment 3: tap-major alone is 29% slower** than a frame-major kernel
+  that keeps its sums in registers, because every partial sum is stored right
+  after an FMA. It's the step towards register tiles (experiment 6), not a
+  win by itself.
+- **Experiment 5: runs of loads from DTCM are cheaper than the model
+  assumes.** They cost 0.5 cycles per float for VLDR, VLDR.64 and VLDM alike;
+  the model uses 0.7–2.1. That is probably why pinning the load runs gains
+  5% here, not the 12% the model predicts.
+- **Experiment 7: `-fno-schedule-insns2` makes it slower** (+7%).
+- **Experiment 10: 16-frame blocks cost 13% more per sample.** Retuning the
+  tile plan for them recovers only 1% in this kernel; the model predicted 6%.
+- **Cumulative path on the board:**
+
+  | Step | Experiment | Cycles/sample |
+  |---|---:|---:|
+  | Generic | 1 | 28,236 |
+  | Specialized | 1 | 5,649 |
+  | 6×3 tile | 6 | 4,875 |
+  | Pinned load runs | 7 | 4,689 |
+  | Assembly tile | 8 | 4,045 |
+  | Delay lines in DTCM | 9 | 3,675 |
+
+  The last step is 2.3x the floor of 1,614 multiply-adds per sample.

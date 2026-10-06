@@ -1,0 +1,124 @@
+flashing build/01-specialize.bin
+01-specialize on /dev/cu.usbmodem3763335834331, 480 MHz
+== 01 Specialize the code to the model
+   Frame-major loops, masked delay lines. Run-time shapes and a library GEMV vs compile-time shapes.
+   A2-Lite-shaped stack: 23 layers, 3 channels, 1614 MACs/sample. Clock 480 MHz: the 48 kHz budget is 10000 cycles/sample.
+   variant                              cyc/sample    load  speedup  block  p50/block  max/block  check vs first
+   generic GEMV, run-time shapes            28,236  282.3%     1.00x     48  1,355,378  1,358,189  reference
+   specialized, compile-time shapes          5,649   56.4%     5.00x     48    271,123    273,747  OK, max err 6.0e-08
+   (4800 timed samples per variant after 6400 untimed; reference output peak 2.5e-01)
+asking the firmware on /dev/cu.usbmodem3763335834331 to reboot into the bootloader
+flashing build/02-fma.bin
+02-fma on /dev/cu.usbmodem3763335834331, 480 MHz
+== 02 Get the FMA you asked for
+   -O2 -ffast-math. a += w * x vs fmaf(w, x, a), in a load-bound and in an FPU-bound kernel.
+   A2-Lite-shaped stack: 23 layers, 3 channels, 1614 MACs/sample. Clock 480 MHz: the 48 kHz budget is 10000 cycles/sample.
+   variant                              cyc/sample    load  speedup  block  p50/block  max/block  check vs first
+   frame-major, a += w * x                   4,994   49.9%     1.00x     48    239,772    241,499  reference
+   frame-major, fmaf(w, x, a)                5,965   59.6%     0.84x     48    286,351    288,235  OK, max err 7.5e-08
+   6x3 tile, a += w * x                      6,296   62.9%     0.79x     48    302,119    306,209  OK, max err 0
+   6x3 tile, fmaf(w, x, a)                   4,680   46.8%     1.07x     48    224,561    228,054  OK, max err 7.5e-08
+   (4800 timed samples per variant after 6400 untimed; reference output peak 2.5e-01)
+asking the firmware on /dev/cu.usbmodem3763335834331 to reboot into the bootloader
+flashing build/03-loop-order.bin
+03-loop-order on /dev/cu.usbmodem3763335834331, 480 MHz
+== 03 Invert the loop order
+   Masked delay lines, fmaf. Frames outside taps (weights reloaded) vs taps outside frames.
+   A2-Lite-shaped stack: 23 layers, 3 channels, 1614 MACs/sample. Clock 480 MHz: the 48 kHz budget is 10000 cycles/sample.
+   variant                              cyc/sample    load  speedup  block  p50/block  max/block  check vs first
+   frame-major (taps inside)                 5,645   56.4%     1.00x     48    270,955    273,751  reference
+   tap-major (taps outside)                  7,259   72.5%     0.78x     48    348,465    351,624  OK, max err 1.2e-07
+   (4800 timed samples per variant after 6400 untimed; reference output peak 2.5e-01)
+asking the firmware on /dev/cu.usbmodem3763335834331 to reboot into the bootloader
+flashing build/04-delay-lines.bin
+04-delay-lines on /dev/cu.usbmodem3763335834331, 480 MHz
+== 04 Delay lines without wrap logic
+   Tap-major kernel. Rewind (memmove when full) vs masked power-of-two ring vs mirrored exact ring.
+   A2-Lite-shaped stack: 23 layers, 3 channels, 1614 MACs/sample. Clock 480 MHz: the 48 kHz budget is 10000 cycles/sample.
+   variant                              cyc/sample    load  speedup  block  p50/block  max/block  check vs first
+   rewind buffer (memmove when full)         8,425   84.2%     1.00x     48    333,194    547,306  reference
+   masked power-of-two ring                  7,263   72.6%     1.16x     48    348,656    351,904  OK, max err 1.2e-07
+   mirrored exact-size ring                  7,081   70.8%     1.19x     48    339,940    343,368  OK, max err 0
+   (4800 timed samples per variant after 6400 untimed; reference output peak 2.5e-01)
+asking the firmware on /dev/cu.usbmodem3763335834331 to reboot into the bootloader
+flashing build/05-fma-pipeline.bin
+05-fma-pipeline on /dev/cu.usbmodem3763335834331, 480 MHz
+== 05 Measure the FMA pipeline
+   Cortex-M7 FPU pairings: code in ITCM, data in DTCM, interrupts off, loop overhead subtracted.
+   A2-Lite-shaped stack: 23 layers, 3 channels, 1614 MACs/sample. Clock 480 MHz: the 48 kHz budget is 10000 cycles/sample.
+   pattern                                  cycles             measured before on an STM32H750
+   VFMA, 6 independent accumulators           0.98  per VFMA   ~1
+   VFMA, dependent chain                      2.96  per VFMA   ~3 (latency)
+   VFMA + VLDR, interleaved                   3.87  per pair   ~4: load waits for the FMA
+   VMUL + VLDR, interleaved                   1.00  per pair   ~1.1: dual-issue
+   VFMA + integer LDR, interleaved            1.00  per pair   ~1.1: dual-issue
+   VFMA + VSTR, interleaved                   3.87  per pair   ~4: store waits too
+   VMAXNM + VSTR, interleaved                 1.00  per pair   ~1.1
+   VFMA + VMOV core->FP, interleaved          3.87  per pair   ~3.9: same path
+   run of VLDR                                0.52  per float  0.8-1.0
+   run of VLDR.64                             0.50  per float  ~0.7
+   VLDM of 8 registers                        0.50  per float  ~2.1
+   (1000 iterations x 8 groups per probe, best of 4 runs)
+asking the firmware on /dev/cu.usbmodem3763335834331 to reboot into the bootloader
+flashing build/06-register-tiles.bin
+06-register-tiles on /dev/cu.usbmodem3763335834331, 480 MHz
+== 06 Keep the running sums in registers
+   Mirrored delay lines, fmaf. Tap-major (sums in memory) vs register tiles of T frames x 3 outputs.
+   A2-Lite-shaped stack: 23 layers, 3 channels, 1614 MACs/sample. Clock 480 MHz: the 48 kHz budget is 10000 cycles/sample.
+   variant                              cyc/sample    load  speedup  block  p50/block  max/block  check vs first
+   tap-major, sums in memory                 7,066   70.6%     1.00x     48    339,322    342,552  reference
+   tile 1x3  (7 registers)                   5,958   59.5%     1.19x     48    285,888    289,448  OK, max err 0
+   tile 3x3  (15 registers)                  5,489   54.8%     1.29x     48    263,205    268,514  OK, max err 0
+   tile 6x3  (27 registers)                  4,875   48.7%     1.45x     48    234,015    236,759  OK, max err 0
+   tile 8x3  (35: spills)                    5,173   51.7%     1.37x     48    248,246    251,166  OK, max err 0
+   (4800 timed samples per variant after 6400 untimed; reference output peak 2.5e-01)
+asking the firmware on /dev/cu.usbmodem3763335834331 to reboot into the bootloader
+flashing build/07-load-runs.bin
+07-load-runs on /dev/cu.usbmodem3763335834331, 480 MHz
+== 07 Keep loads in runs
+   6x3 register tile, mirrored delay lines. Compiler's load schedule vs load runs pinned before the FMAs.
+   A2-Lite-shaped stack: 23 layers, 3 channels, 1614 MACs/sample. Clock 480 MHz: the 48 kHz budget is 10000 cycles/sample.
+   variant                              cyc/sample    load  speedup  block  p50/block  max/block  check vs first
+   compiler schedule                         4,914   49.1%     1.00x     48    235,777    239,468  reference
+   pinned load runs                          4,689   46.8%     1.05x     48    224,957    228,434  OK, max err 0
+   pinned + -fno-schedule-insns2             5,037   50.3%     0.98x     48    241,643    245,359  OK, max err 0
+   (4800 timed samples per variant after 6400 untimed; reference output peak 2.5e-01)
+asking the firmware on /dev/cu.usbmodem3763335834331 to reboot into the bootloader
+flashing build/08-asm-tile.bin
+08-asm-tile on /dev/cu.usbmodem3763335834331, 480 MHz
+== 08 Write the inner tile in assembly
+   6x3 register tile, mirrored delay lines. C with pinned load runs vs hand-allocated assembly.
+   A2-Lite-shaped stack: 23 layers, 3 channels, 1614 MACs/sample. Clock 480 MHz: the 48 kHz budget is 10000 cycles/sample.
+   variant                              cyc/sample    load  speedup  block  p50/block  max/block  check vs first
+   C tile, pinned load runs                  4,680   46.8%     1.00x     48    224,579    227,464  reference
+   assembly tile                             4,045   40.4%     1.16x     48    194,211    196,663  OK, max err 6.0e-08
+   (4800 timed samples per variant after 6400 untimed; reference output peak 2.5e-01)
+asking the firmware on /dev/cu.usbmodem3763335834331 to reboot into the bootloader
+flashing build/09-tcm-placement.bin
+09-tcm-placement on /dev/cu.usbmodem3763335834331, 480 MHz
+EXP_INFO id=09-tcm-placement hz=480000000
+EXP_READY
+== 09 Place data in tightly coupled memory
+   Assembly 6x3 tile. Code, weights and delay lines in flash/SRAM vs ITCM/DTCM; warm and cold caches.
+   A2-Lite-shaped stack: 23 layers, 3 channels, 1614 MACs/sample. Clock 480 MHz: the 48 kHz budget is 10000 cycles/sample.
+   variant                              cyc/sample    load  speedup  block  p50/block  max/block  check vs first
+   QSPI code, SRAM data                      4,162   41.6%     1.00x     48    199,599    202,867  reference
+   QSPI code, SRAM data, cold                4,421   44.2%     0.94x     48    212,274    216,458  OK, max err 0
+   ITCM code, DTCM weights                   4,059   40.5%     1.03x     48    194,929    198,886  OK, max err 0
+   ITCM code, DTCM weights, cold             4,180   41.8%     1.00x     48    200,538    203,502  OK, max err 0
+   ITCM code, all data DTCM                  3,675   36.7%     1.13x     48    176,462    178,771  OK, max err 0
+   ITCM code, all data DTCM, cold            3,846   38.4%     1.08x     48    184,668    187,010  OK, max err 0
+   (4800 timed samples per variant after 6400 untimed; reference output peak 2.5e-01)
+asking the firmware on /dev/cu.usbmodem3763335834331 to reboot into the bootloader
+flashing build/10-block-size.bin
+10-block-size on /dev/cu.usbmodem3763335834331, 480 MHz
+== 10 Tune for the block size
+   Pinned C tiles, mirrored delay lines. 6-frame vs 4-frame tile, called with 48- and 16-frame blocks.
+   A2-Lite-shaped stack: 23 layers, 3 channels, 1614 MACs/sample. Clock 480 MHz: the 48 kHz budget is 10000 cycles/sample.
+   variant                              cyc/sample    load  speedup  block  p50/block  max/block  check vs first
+   block 48: 6-frame tiles                   4,674   46.7%     1.00x     48    224,378    227,036  reference
+   block 48: 4-frame tiles                   5,586   55.8%     0.84x     48    268,050    270,838  OK, max err 0
+   block 16: 6-frame tiles + 4 singles       5,280   52.8%     0.89x     16     84,471     86,356  OK, max err 0
+   block 16: 4-frame tiles                   5,859   58.5%     0.80x     16     93,780     95,836  OK, max err 0
+   block 16: 6 + 6 + 4-frame tiles           5,219   52.1%     0.90x     16     83,527     86,294  OK, max err 0
+   (4800 timed samples per variant after 6400 untimed; reference output peak 2.5e-01)
